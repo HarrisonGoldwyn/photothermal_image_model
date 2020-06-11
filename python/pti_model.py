@@ -43,9 +43,17 @@ import misloc_mispol_package.optics.anal_foc_diff_fields as aff
 
 probe_field_magnitude = (1.4444)**0.5 * 10**18 * 10**(-1)
 
-class temperature_dependent_particle(object):
 
-    def __init__(self, hw, eps_inf, w_p, gamma, E_probe=probe_field_magnitude):
+class heated_particle_properties(object):
+
+    def __init__(self,
+        hw,
+        eps_inf,
+        w_p,
+        gamma,
+        eps0,
+        E_probe=probe_field_magnitude,
+        dn_dt=None):
         """ Generates dielectric funtion at given wavelength and Drude parameters
             for use by the methods """
         # eps1 = -2.5676 + 1j*3.6391
@@ -55,14 +63,21 @@ class temperature_dependent_particle(object):
             w_p=w_p,  # w_p
             gamma=gamma,)
 
-        self.n0 = 1.473
-        self.eps0 = self.n0**2
+        self.eps0 = eps0
+        self.n0 = eps0**0.5
         self.E_0 = E_probe
+
+        ## Change in refractive index with temperature
+        if dn_dt is None:
+            ## Default is 5.858*10**(-4) if n0 is glyucerol (1.473)
+            self.dn_dt = 2.7*10**(-4) * self.n0
+        else:
+            self.dn_dt = dn_dt
 
     def deltaNonN(self, T):
         """ Define change in ref index with temperature
             """
-        return 2.7*10**(-4)*T
+        return self.dn_dt/self.n0*T
 
 
     def alphaC(self, a):
@@ -126,8 +141,7 @@ class temperature_dependent_particle(object):
         return da
 
 
-
-    def elec(self, dip_angle, x, y, k):
+    def foc_field(self, dip_angle, x, y, k):
         """ Dipole field of an x oriented dipole"""
 
         E = aff.E_field(
@@ -139,6 +153,316 @@ class temperature_dependent_particle(object):
 
         return E
 
+
+    def alpha_of_T(self, T, b, a):
+
+        alpha = (
+            self.alphaC(a)
+            +
+            self.alphaDelta(T, b, a)
+            +
+            self.alphaDeltaCN(T, a)
+            )
+
+        return alpha
+
+
+class single_particle_image(heated_particle_properties):
+
+    def __init__(self,
+        hw,
+        eps_inf,
+        w_p,
+        gamma,
+        eps0,
+        E_probe=probe_field_magnitude,
+        dn_dt=None):
+
+        heated_particle_properties.__init__(
+            self,
+            hw,
+            eps_inf,
+            w_p,
+            gamma,
+            eps0,
+            E_probe,
+            dn_dt,
+            )
+
+    def p(self,
+        alpha,
+        gScale=1,
+        probe_E=None):
+        if probe_E is None:
+            probe_E = self.E_0
+
+        _p = np.asarray([alpha*probe_E])
+
+        if len(_p.ravel()) is 1:
+            _p = _p.ravel()
+
+        return _p
+
+
+    def p1hotFoc(self,
+        w, T1, b1, a1,
+        gScale=1):
+
+        alpha1 = self.alpha_of_T(T1, b1, a1)
+
+        p1 = self.p(
+            alpha=alpha1,
+            gScale=gScale)
+
+        return p1
+
+    def p1coldFoc(self,
+        w, T1, b1, a1,
+        gScale=1):
+
+        alpha1 = self.alphaC(a1)
+
+        p1 = self.p(
+            alpha=alpha1,
+            gScale=gScale)
+
+        return p1
+
+    def hot_I(self,
+        T1, w, l, b1, a1, x1,
+    #     dip_angle_1=0,
+    #     dip_angle_2=0,
+        gScale=1,
+        **kwargs):
+
+    #     print(f'kwargs = {kwargs}')
+        image = self.dip_image(
+            T1, w, l, b1, a1, x1,
+            pp1_func=self.p1hotFoc,
+            **kwargs,
+            )
+
+        return image
+
+    def cold_I(self,
+        T1, w, l, b1, a1, x1,
+        **kwargs):
+
+        image = self.dip_image(
+            T1, w, l, b1, a1, x1,
+            pp1_func=self.p1coldFoc,
+            **kwargs,
+            )
+
+        return image
+
+    def dip_image(self,
+        T1, w, l, b1, a1, x1,
+        pp1_func,
+        gScale=1,
+        n_b=None,
+        ):
+
+        if n_b==None:
+            n_b=self.n0
+
+        k = w*n_b/c
+
+        x1 = l - x1
+
+        def dot(field1, field2):
+            return np.sum(field1 * field2, axis=0)
+
+        field1 = self.foc_field(0, x1, 0, k)
+
+        pp1 = pp1_func(
+            w, T1, b1, a1,
+            gScale=1
+            )
+
+        t1 = np.abs(pp1)**2. * dot(field1, np.conj(field1))
+
+        return t1
+
+    def wfi_pti(self,
+        T1, w, l, b1, a1, x1,
+    #     dip_angle_1=0,
+    #     dip_angle_2=0,
+        **kwargs):
+        """ Lengths are input in nm
+
+            Args:
+                T1: Temperature of particle (core)
+                w: frequency of probe field
+                l: x positions to evaluate signal
+                b1: radius of shell surface of particle
+                a1: radius of core of particle
+                x1: position of single particle
+            """
+
+        ## Convert all length args back to cgs (in nm)
+        l, b1, a1, x1 =  1e-7*np.array([l, b1, a1, x1])
+
+
+        difference_I = (
+            self.hot_I(
+                T1, w, l, b1, a1, x1,
+                **kwargs)
+            -
+            self.cold_I(
+                T1, w, l, b1, a1, x1,
+                **kwargs)
+            )
+
+        return difference_I
+
+    ## Confocal image
+
+    def p_gau_probed(self,
+        x_beam,
+        probe_hw,
+        particle_position,
+        alpha,
+        gscale=1,
+        probe_E=None,
+        n_b=None):
+        """ Define dipole magnitude with Gaussian beam driving
+            force.
+            """
+        if probe_E is None:
+            probe_E = self.E_0
+
+        if n_b==None:
+            n_b=self.n0
+
+        x1 = np.array([particle_position, 0, 0])
+
+        if type(alpha) is np.ndarray:
+            alpha = np.asarray(alpha).reshape(len(alpha), 1, 1)
+
+        p1 = cp.single_dip_mag_focused_beam(
+            angle=0,
+            p0_position=x1,
+            beam_x_positions=x_beam,
+            E_d_angle=0,
+            drive_hbar_w=probe_hw,
+            alpha0_diag=alpha*np.identity(3)[None, ...],
+            n_b=n_b,
+            drive_amp=probe_E,
+            return_polarizabilities=False,)
+
+        return p1
+
+
+    def p1_hot_conf(self,
+        x_beam,
+        probe_hw, T1, b1, particle_position, a1,
+        gscale=1,
+        **kwargs):
+        """ Confocally probed dipole 1"""
+
+        alpha1 = self.alpha_of_T(T1, b1, a1)
+
+        p1 = self.p_gau_probed(
+            x_beam,
+            probe_hw=probe_hw,
+            particle_position=particle_position,
+            alpha=alpha1,
+            gscale=gscale)
+
+        return p1
+
+
+    def p1_cold_conf(self,
+        x_beam,
+        probe_hw, b1, particle_position, a1,
+        gscale=1,
+        **kwargs):
+
+        return self.p1_hot_conf(
+            x_beam,
+            probe_hw,
+            T1=0,
+            b1=b1,
+            particle_position=particle_position,
+            a1=a1,
+            gscale=gscale,
+            **kwargs)
+
+
+    def conf_PTI(self,
+        x_beam,
+        probe_hbar_w, T1, b1, particle_position, a1,
+        **kwargs):
+        """ Args are all simple floats. Lengths are in units of nm """
+
+        x_beam, particle_position, b1, a1 =  1e-7*np.array(
+            [x_beam, particle_position, b1, a1,])
+
+        hot_dipole = lambda omega: self.p1_hot_conf(
+            x_beam,
+            probe_hw=omega*hbar,
+            particle_position=particle_position,
+            T1=T1,
+            b1=b1,
+            a1=a1,
+            gscale=1,
+            **kwargs)
+
+        cold_dipole = lambda omega: self.p1_cold_conf(
+            x_beam,
+            probe_hw=omega*hbar,
+            particle_position=particle_position,
+            b1=b1,
+            a1=a1,
+            gscale=1,
+            **kwargs)
+
+
+        x1 = np.array([[particle_position, 0, 0]])
+        # hot_signal = self.power_scatt_two_dips(
+        #     p1_hot,
+        #     p2_hot,
+        #     x_beam,
+        #     w, T1, b1, T2, b2, d, a1, a2, **kwargs)
+        hot_signal = cp.single_dip_sigma_scat(
+            hot_dipole,
+            probe_hbar_w,
+            n_b=self.n0,
+            E_0=self.E_0,
+            )
+
+        cold_signal = cp.single_dip_sigma_scat(
+            cold_dipole,
+            probe_hbar_w,
+            n_b=self.n0,
+            E_0=self.E_0,
+            )
+
+        return hot_signal - cold_signal
+
+
+
+class temperature_dependent_particle(heated_particle_properties):
+
+    def __init__(self,
+        hw,
+        eps_inf,
+        w_p,
+        gamma,
+        eps0,
+        E_probe=probe_field_magnitude,
+        dn_dt=None):
+
+        heated_particle_properties.__init__(
+            self,
+            hw,
+            eps_inf,
+            w_p,
+            gamma,
+            eps0,
+            E_probe,
+            dn_dt,)
 
     def g(
         self,
@@ -190,19 +514,6 @@ class temperature_dependent_particle(object):
             p = p.ravel()
 
         return p
-
-
-    def alpha_of_T(self, T, b, a):
-
-        alpha = (
-            self.alphaC(a)
-            +
-            self.alphaDelta(T, b, a)
-            +
-            self.alphaDeltaCN(T, a)
-            )
-
-        return alpha
 
 
     def p1hotFoc(self,
@@ -294,8 +605,8 @@ class temperature_dependent_particle(object):
         def dot(field1, field2):
             return np.sum(field1 * field2, axis=0)
 
-        field1 = self.elec(0, x1, 0, k)
-        field2 = self.elec(0, x2, 0, k)
+        field1 = self.foc_field(0, x1, 0, k)
+        field2 = self.foc_field(0, x2, 0, k)
 
         pp1 = pp1_func(
             w, T1, b1, T2, b2, d, a1, a2,
@@ -452,47 +763,47 @@ class temperature_dependent_particle(object):
 
         return p1, p2
 
-    def p_pw_probed(self,
-        x_beam,
-        probe_hw,
-        d,
-        alpha, that_alpha,
-        gscale=1,
-        probe_E=None,
-        n_b=None):
-        """ Define dipole magnitude with Gaussian beam driving
-            force.
-            """
-        if probe_E is None:
-            probe_E = self.E_0
+    # def p_pw_probed(self,
+    #     x_beam,
+    #     probe_hw,
+    #     d,
+    #     alpha, that_alpha,
+    #     gscale=1,
+    #     probe_E=None,
+    #     n_b=None):
+    #     """ Define dipole magnitude with Gaussian beam driving
+    #         force.
+    #         """
+    #     if probe_E is None:
+    #         probe_E = self.E_0
 
-        if n_b==None:
-            n_b=self.n0
+    #     if n_b==None:
+    #         n_b=self.n0
 
-        d_col_vec = np.array([[d, 0, 0]])
+    #     d_col_vec = np.array([[d, 0, 0]])
 
-        if type(alpha) is np.ndarray:
-            alpha = np.asarray(alpha).reshape(len(alpha), 1, 1)
-            that_alpha = np.asarray(that_alpha).reshape(len(alpha), 1, 1)
-        # else:
-            # alpha = alpha
-            # that_alpha = that_alpha
+    #     if type(alpha) is np.ndarray:
+    #         alpha = np.asarray(alpha).reshape(len(alpha), 1, 1)
+    #         that_alpha = np.asarray(that_alpha).reshape(len(alpha), 1, 1)
+    #     # else:
+    #         # alpha = alpha
+    #         # that_alpha = that_alpha
 
 
-        p1, p2 = cp.coupled_dip_mags_both_driven(
-            mol_angle=0,
-            plas_angle=0,
-            d_col=-d_col_vec,
-            E_d_angle=0,
-            drive_hbar_w=probe_hw,
-            alpha0_diag=alpha*np.identity(3)[None, ...],
-            alpha1_diag=that_alpha*np.identity(3)[None, ...],
-            n_b=n_b,
-            drive_amp=probe_E,
-            return_polarizabilities=False,
-            )
+    #     p1, p2 = cp.coupled_dip_mags_both_driven(
+    #         mol_angle=0,
+    #         plas_angle=0,
+    #         d_col=-d_col_vec,
+    #         E_d_angle=0,
+    #         drive_hbar_w=probe_hw,
+    #         alpha0_diag=alpha*np.identity(3)[None, ...],
+    #         alpha1_diag=that_alpha*np.identity(3)[None, ...],
+    #         n_b=n_b,
+    #         drive_amp=probe_E,
+    #         return_polarizabilities=False,
+    #         )
 
-        return p1, p2
+    #     return p1, p2
 
 
     def p1p2_hot_conf(self,
@@ -539,49 +850,49 @@ class temperature_dependent_particle(object):
             gscale=gscale,
             **kwargs)
 
-    def p1p2_hot_wf(self,
-        x_beam,
-        probe_hw, T1, b1, T2, b2, d, a1, a2,
-        gscale=1,
-        **kwargs):
-        """ Confocally probed dipole 1"""
+    # def p1p2_hot_wf(self,
+    #     x_beam,
+    #     probe_hw, T1, b1, T2, b2, d, a1, a2,
+    #     gscale=1,
+    #     **kwargs):
+    #     """ Confocally probed dipole 1"""
 
-        alpha1 = self.alpha_of_T(T1, b1, a1)
+    #     alpha1 = self.alpha_of_T(T1, b1, a1)
 
-        alpha2 = self.alpha_of_T(T2, b2, a2)
+    #     alpha2 = self.alpha_of_T(T2, b2, a2)
 
-        p1, p2 = self.p_pw_probed(
-            x_beam,
-            # x_dip=-d/2,
-            # x_that_dip=+d/2,
-            probe_hw=probe_hw,
-            d=d,
-            alpha=alpha1,
-            that_alpha=alpha2,
-            gscale=gscale)
+    #     p1, p2 = self.p_pw_probed(
+    #         x_beam,
+    #         # x_dip=-d/2,
+    #         # x_that_dip=+d/2,
+    #         probe_hw=probe_hw,
+    #         d=d,
+    #         alpha=alpha1,
+    #         that_alpha=alpha2,
+    #         gscale=gscale)
 
-        return p1, p2
+    #     return p1, p2
 
 
-    def p1p2_cold_wf(self,
-        x_beam,
-        probe_hw,
-        b1, b2, d, a1, a2,
-        gscale=1,
-        **kwargs):
+    # def p1p2_cold_wf(self,
+    #     x_beam,
+    #     probe_hw,
+    #     b1, b2, d, a1, a2,
+    #     gscale=1,
+    #     **kwargs):
 
-        return self.p1p2_hot_conf(
-            x_beam,
-            probe_hw,
-            T1=0,
-            b1=b1,
-            T2=0,
-            b2=b2,
-            d=d,
-            a1=a1,
-            a2=a2,
-            gscale=gscale,
-            **kwargs)
+    #     return self.p1p2_hot_conf(
+    #         x_beam,
+    #         probe_hw,
+    #         T1=0,
+    #         b1=b1,
+    #         T2=0,
+    #         b2=b2,
+    #         d=d,
+    #         a1=a1,
+    #         a2=a2,
+    #         gscale=gscale,
+    #         **kwargs)
     # ## And nor build the scattered power expressions
     # def power_scatt_two_dips(self,
     #     p1, p2,
@@ -662,6 +973,9 @@ class temperature_dependent_particle(object):
             E_0=self.E_0,
             )
 
-        return hot_signal - cold_signal
+        if 'return_components' in kwargs and kwargs['return_components']:
+            return hot_components, cold_components
+        else:
+            return hot_signal - cold_signal
 
 
