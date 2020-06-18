@@ -165,11 +165,9 @@ class heated_particle_properties(object):
         dni_dt=None,):
         """ Change in polarizability due to change in core temp"""
         if dnr_dt is None:
-            dnr_dt = 2.7 * 10**(-4)
-            deltaCNRonN = dnr_dt * (T) /n ???
+            dnr_dt = - 2.7 * 10**(-4)
         if dni_dt is None:
-            dni_dt = 4 * 10**(-4)
-            deltaCNIonN = dni_dt * (T) /n ???
+            dni_dt = - 4 * 10**(-4)
 
         if eps0 is None:
             eps0 = self.eps0
@@ -182,14 +180,10 @@ class heated_particle_properties(object):
             /
             (self.eps1 + 2*eps0)**2
             *
-            (n_p**2 * deltaCNRonN - n_pp**2 * deltaCNIonN)
+            (n_p + 1j*n_pp)
+            *
+            (dnr_dt + 1j*dni_dt) * T
             )
-
-        if lounis_expansion:
-            da *= self.eps1
-            ## one factor of n to cancel out the 1/n implicit in the
-            ## 'deltaCNRonN' and' deltaCNIonN' and a second factor to
-            ## get the numerator proportial to (n * delta n)
 
         return da
 
