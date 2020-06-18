@@ -74,17 +74,26 @@ class heated_particle_properties(object):
         else:
             self.dn_dt = dn_dt
 
-    def deltaNonN(self, T):
+    def deltaNonN(self, T, eps0 = None):
         """ Define change in ref index with temperature
             """
-        return self.dn_dt/self.n0*T
+        if eps0 is None:
+            n0 = self.n0
+        else:
+            n0 = eps0**0.5
+
+        return self.dn_dt/n0*T
 
 
-    def alphaC(self, a):
+    def alphaC(self, a, eps0=None):
         """ Define core polarizability of a sphere as
             funtion of core radius.
             """
-        return a**3*((self.eps1 - self.eps0)/(self.eps1 + 2*self.eps0))
+
+        if eps0 is None:
+            eps0 = self.eps0
+
+        return a**3*((self.eps1 - eps0)/(self.eps1 + 2*eps0))
 
 
     def delT_shell_on_delT_core(self, b, a):
@@ -102,56 +111,87 @@ class heated_particle_properties(object):
         return ratio
 
 
-    def alphaDelta(self, T, b, a):
+    def alphaDelta(self,
+        T,
+        b,
+        a,
+        eps0=None,
+        lounis_expansion=True):
         """ Change in alpha with temperature of the glycerol shell"""
+
+        if eps0 is None:
+            eps0 = self.eps0
 
         f = a**3. / b**3.
 
-        da = (
-            b**3./3 * (1-f)
-            *
-            (1 + 2*f*(
-                (self.eps1 - self.eps0)/(self.eps1 + 2*self.eps0)
-                )**2.)
-            *
-            self.deltaNonN(T)
-            *
-            self.delT_shell_on_delT_core(b, a)
-        )
+        if not lounis_expansion:
+            da = (
+                b**3./3 * (1-f)
+                *
+                (1 + 2*f*(
+                    (self.eps1 - eps0)/(self.eps1 + 2*eps0)
+                    )**2.)
+                *
+                self.deltaNonN(T, eps0=eps0)
+                *
+                self.delT_shell_on_delT_core(b, a)
+                )
+        elif lounis_expansion:
+            da = (
+                - (2/3) * b**3. * (f-1)
+                *
+                (
+                    1
+                    +
+                    2*f*(self.eps1 - eps0)**2.
+                    /
+                    (self.eps1 + 2*eps0)**2.
+                    )
+                *
+                self.deltaNonN(T, eps0=eps0)
+                *
+                self.delT_shell_on_delT_core(b, a)
+                )
 
         return da
 
 
-    def alphaDeltaCN(self, T, a):
+    def alphaDeltaCN(self,
+        T,
+        a,
+        eps0=None,
+        lounis_expansion=True,
+        dnr_dt=None,
+        dni_dt=None,):
         """ Change in polarizability due to change in core temp"""
-        deltaCNRonN = 2.7 * 10**(-4) * (T)
-        deltaCNIonN = 4 * 10**(-4) * (T)
+        if dnr_dt is None:
+            dnr_dt = 2.7 * 10**(-4)
+            deltaCNRonN = dnr_dt * (T) /n ???
+        if dni_dt is None:
+            dni_dt = 4 * 10**(-4)
+            deltaCNIonN = dni_dt * (T) /n ???
+
+        if eps0 is None:
+            eps0 = self.eps0
 
         n_p = np.sqrt((np.abs(self.eps1) + np.real(self.eps1)/2))
         n_pp = np.sqrt((np.abs(self.eps1) - np.real(self.eps1)/2))
 
         da = (
-            (6 * a**3 * self.eps0)
+            (6 * a**3 * eps0)
             /
-            (self.eps1 + 2*self.eps0)**2
+            (self.eps1 + 2*eps0)**2
             *
             (n_p**2 * deltaCNRonN - n_pp**2 * deltaCNIonN)
             )
 
+        if lounis_expansion:
+            da *= self.eps1
+            ## one factor of n to cancel out the 1/n implicit in the
+            ## 'deltaCNRonN' and' deltaCNIonN' and a second factor to
+            ## get the numerator proportial to (n * delta n)
+
         return da
-
-
-    def foc_field(self, dip_angle, x, y, k):
-        """ Dipole field of an x oriented dipole"""
-
-        E = aff.E_field(
-            dipole_orientation_angle=dip_angle,
-            xi=x,
-            y=y,
-            k=k
-            )
-
-        return E
 
 
     def alpha_of_T(self, T, b, a):
@@ -167,6 +207,19 @@ class heated_particle_properties(object):
         return alpha
 
 
+    def foc_field(self, dip_angle, x, y, k):
+        """ Dipole field of an x oriented dipole"""
+
+        E = aff.E_field(
+            dipole_orientation_angle=dip_angle,
+            xi=x,
+            y=y,
+            k=k
+            )
+
+        return E
+
+
 class single_particle_image(heated_particle_properties):
 
     def __init__(self,
@@ -176,7 +229,8 @@ class single_particle_image(heated_particle_properties):
         gamma,
         eps0,
         E_probe=probe_field_magnitude,
-        dn_dt=None):
+        dn_dt=None,
+        metal_room_temp=False):
 
         heated_particle_properties.__init__(
             self,
@@ -188,6 +242,15 @@ class single_particle_image(heated_particle_properties):
             E_probe,
             dn_dt,
             )
+        self.metal_room_temp = metal_room_temp
+
+    def alphaDeltaCN(self, T, a, **kwargs):
+        """ Change in polarizability due to change in core temp"""
+        if not self.metal_room_temp:
+            return heated_particle_properties.alphaDeltaCN(self, T, a, **kwargs)
+        elif self.metal_room_temp:
+            return 0
+
 
     def p(self,
         alpha,
